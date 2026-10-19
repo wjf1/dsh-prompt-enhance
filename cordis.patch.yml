@@ -1,0 +1,5 @@
+# dsh-prompt-enhance 的 bundle 入口：把宿主半登记进 DSH 的插件图。
+# 客户端半由 package.json 的 dsh.client 声明，加载器会自动取 exports["./client"]。
+- insert:
+    - id: dsh-prompt-enhance
+      name: 'dsh-prompt-enhance'

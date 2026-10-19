@@ -1,0 +1,49 @@
+{
+  "name": "dsh-prompt-enhance",
+  "version": "0.2.1",
+  "description": "Sparkle button in the DSH composer: rewrite the draft into an executable prompt through the harness LLM, with a multi-level undo stack and a token-level before/after diff.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    },
+    "manifestVersion": 1
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "prompt",
+    "enhance",
+    "workbuddy"
+  ],
+  "author": "wjf1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wjf1/dsh-prompt-enhance.git"
+  },
+  "homepage": "https://github.com/wjf1/dsh-prompt-enhance#readme",
+  "bugs": {
+    "url": "https://github.com/wjf1/dsh-prompt-enhance/issues"
+  }
+}
