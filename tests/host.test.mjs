@@ -238,3 +238,35 @@ test('resolveModel 单元：缺字段、空串、超长都回落默认', () => {
     reasoningEffort: 'high',
   });
 });
+
+test('超时会主动关闭上游流，而不是让它在后台继续消耗 token', async () => {
+  let closed = false;
+  const llm = {
+    calls: [],
+    stream(options) {
+      this.calls.push(options);
+      return (async function* () {
+        try {
+          yield { type: 'text-delta', text: '开工' };
+          // 模拟上游卡住/持续产出：永远不走到 finish（超时只有 20ms，
+          // 这个等待必须比 timeout 长得多）。
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        } finally {
+          closed = true;
+        }
+      })();
+    },
+  };
+
+  const route = makeHost({ llm, config: { timeoutMs: 20 } });
+  const res = makeResponse();
+  const started = Date.now();
+  await route.handler(makeRequest({ body: { text: '帮我写个周报' } }), res);
+
+  assert.equal(res.status, 504);
+  assert.equal(res.json().error, 'TIMEOUT');
+  // 关键回归：只清 timer 不关流的话，上游会一直跑到自然结束并继续计费。
+  assert.equal(closed, true, '超时后必须关闭上游流');
+  assert.ok(Date.now() - started < 1000, '超时应当尽快返回，不等上游');
+});

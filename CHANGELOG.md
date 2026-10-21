@@ -1,5 +1,25 @@
 # 变更记录
 
+## Unreleased（未发布，对应仓库 main）
+
+### 修复
+
+- **超时只清 timer，不中止上游流**（`lib/index.js`）：`Promise.race([consume(), timeout])` 超时后上游流仍在后台继续产出 token（照旧计费）。现在超时会显式 `stream.return?.()` 关闭上游；同时给 `consume()` 挂上 catch，避免它在 race 结束后才失败而变成 unhandledRejection 把宿主进程带崩。
+- **请求体超限时 413 发不出去**（`lib/index.js`）：原实现先 `req.destroy()` 再回 413，客户端只会收到 `ECONNRESET`。现在先回响应，靠 drain 收尾。
+- **测试硬编码作者本机的绝对路径**（`tests/client.test.mjs`）：`readFileSync('C:/Users/admin/.dsh/...')` 让除作者机器外的环境整套测试必失败。改用 `new URL('../lib/client.js', import.meta.url)` 相对解析，现在 36 项全过。
+- **清洗引号时不处理嵌套**（`lib/prompt.mjs`）：`^(["“'])([\s\S]*)(["”'])$` 允许开闭引号不同族，且只检查正文是否含"开头那个字符"，`"He said "hi""` 这类会被剥掉外层吃掉正文。现在只认成对引号（`""` / `“”` / `''` / `‘’`），且正文含任何引号就原样保留。
+
+### 新增
+
+- `package.json` 补 `scripts.test` / `scripts.check`，补最小 CI（Node 22/24：语法检查 + 测试）；此前测试存在但无法 `npm test` 触发，也没有任何 CI。
+- 导出 `MODEL_ID_PATTERN` 与 `DEFAULTS`（`resolveModel` 原本已导出），方便上层或客户端复用同一套白名单。
+- `tests/client.test.ts` 之外新增「客户端与宿主半 API 前缀一致」的漂移测试：客户端是运行时拼接的脚本片段、不能 import 本地模块，前缀只能两处各写一份，用测试锁住一致性。
+- 新增「超时会关闭上游流」回归测试。
+
+### 已知偏差（未处理）
+
+- README 顶部新增**版本漂移警示**：npm 上最新 `0.2.7` 是重构后的另一套实现（约 2.2k 行），尚未回流本仓库；npm 源码回流与 `tag → publish` 流程需要作者本人在有 npm 凭证的环境完成。
+
 ## 0.2.1 — 2026-10-19
 
 差异卡「看不清」修复：对比度、字号行距、排版层级、浮层遮挡四类问题。

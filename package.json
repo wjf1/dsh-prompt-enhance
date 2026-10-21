@@ -14,6 +14,10 @@
     "README.md",
     "cordis.patch.yml"
   ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/prompt.mjs"
+  },
   "engines": {
     "node": ">=22",
     "dsh": ">=0.2.0"

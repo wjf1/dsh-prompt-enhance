@@ -35,3 +35,16 @@ test('cleanEnhancedText 剥围栏/前缀/包裹引号，正文不动', () => {
   assert.equal(cleanEnhancedText(''), '');
   assert.equal(cleanEnhancedText(null), '');
 });
+
+test('cleanEnhancedText 不剥嵌套引号（剥了会吃掉正文的引号）', () => {
+  // 外层引号包着内含引号的正文：原样保留。
+  assert.equal(cleanEnhancedText('"He said "hi" to me"'), '"He said "hi" to me"');
+  assert.equal(cleanEnhancedText('“他说“你好”然后走了”'), '“他说“你好”然后走了”');
+  // 正文只有一个撇号（英文所有格）也不再剥，避免把内容切掉一半。
+  assert.equal(cleanEnhancedText('"the dog\'s ball"'), '"the dog\'s ball"');
+  // 半开半闭的残片不算一对。
+  assert.equal(cleanEnhancedText('“请解释这段代码\''), '“请解释这段代码\'');
+  // 正常成对仍然照剥。
+  assert.equal(cleanEnhancedText('"请解释这段代码"'), '请解释这段代码');
+  assert.equal(cleanEnhancedText('‘请解释这段代码’'), '请解释这段代码');
+});

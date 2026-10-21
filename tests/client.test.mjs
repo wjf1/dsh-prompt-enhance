@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
+import { API_PREFIX } from '../lib/index.js';
+
+/**
+ * 客户端半是运行时用 `new Function` 拼接的脚本片段，不能 `import` 本地模块，
+ * 所以前缀只能在两处各写一份。这里用测试锁住"两份必须相同"，
+ * 避免哪天改了 host 的 API_PREFIX 却忘了客户端。
+ */
+test('客户端与宿主半的 API 前缀保持一致', () => {
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const found = /const\s+API\s*=\s*'([^']+)'/.exec(source);
+  assert.notEqual(found, null, 'lib/client.js 里应能定位到 API 常量');
+  assert.equal(found[1], API_PREFIX, 'client 的 API 前缀与 lib/index.js 的 API_PREFIX 不一致');
+});
+
 /**
  * 客户端半的验收不需要真 React/DOM：插件工厂只从 require('react') 取
  * useState/useRef/useEffect/useCallback 与 createElement。这里用一个最小实现
@@ -69,7 +83,8 @@ function makeRuntime() {
 
 /** 加载 client.js，返回它注册给 __ModuleLoader__ 的模块。 */
 function loadClient() {
-  const source = readFileSync('C:/Users/admin/.dsh/dsh-prompt-enhance/lib/client.js', 'utf8');
+  // 相对本测试文件解析，测试才能在任何机器上跑（原来硬编码作者本机的绝对路径）。
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
   const runtime = makeRuntime();
   let factory;
   const windowStub = {
