@@ -1,7 +1,7 @@
 # HANDOFF — dsh-prompt-enhance
 
 > 跨会话接力文档。接手先读本文件，再看 `README.md` 与 `lib/`。
-> 最后更新：2026-10-19 23:40（0.2.0：模型跟随 / 多层撤销 / 差异高亮）
+> 最后更新：2026-11-08（镜像同步 npm 0.3.4：schemastery 配置体系 / SSE 流式 / 上下文感知 / 速率限制；仓库定位改为第三方镜像，上游 rongxingda，Apache-2.0）
 
 ## 1. 项目概况与当前状态
 
@@ -60,6 +60,7 @@ C:\Users\admin\.dsh\dsh-prompt-enhance\
    错误码 `NO_ADAPTER / MISSING_CREDENTIAL / AUTH / RATE_LIMIT / CONTEXT_WINDOW_EXCEEDED / QUOTA / TIMEOUT`。
 
 ## 4. 最近一轮变更与交付成果
+- **2026-11-08：镜像同步 0.3.4**——经用户确认仓库定位为 npm 包（rongxingda，Apache-2.0）的第三方镜像：同步 src/ 全量 TS 源码 + lib/ 产物 + docs/release-0.2.3~0.3.4 + README 双语；LICENSE 换为上游 Apache-2.0；删除旧 tests/（0.2.1 时代，与新源码不匹配，上游未随包发布测试）与旧 tools/；自增 tsconfig.json 支持 typecheck（npm 包不含）；ci.yml 重写为 npm ci + typecheck。验证：typecheck 零错误。
 
 - 从 WorkBuddy 的 `app.asar` 里逆向出增强链路的**系统提示词原文**（`SYSTEM_PROMPT`）并逐字复刻进
   `lib/prompt.mjs`；报告原件见 `C:\Users\admin\AppData\Local\Temp\wb_enhance_findings.md`。

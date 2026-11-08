@@ -4,7 +4,7 @@
 
 DeepSeek Harness（DSH）编辑器提示词增强插件：在 composer 输入框注入 ✨ 按钮，经 harness LLM 把草稿
 改写成可执行提示词，带多级撤销栈与 token 级前后 diff；以 `cordis.patch.yml` 补丁描述接入 DSH 桌面端。
-当前版本 **v0.2.1**（package.json；CHANGELOG 的 Unreleased 段对应 main 待发版），测试 36 项。
+镜像定位：本仓库为 npm 包 dsh-prompt-enhance（rongxingda，Apache-2.0）的第三方镜像，当前同步至 **0.3.4**（2026-11-08）。上游未随包发布测试，门禁为 typecheck。
 
 ## 构建与测试命令
 
@@ -12,11 +12,11 @@ Node >= 22，DSH >= 0.2.0，ESM，零第三方依赖。以下命令均来自 `pa
 
 | 命令 | 作用 |
 |---|---|
-| `npm test` | 跑全部测试（node --test，36 项；tests/ 下 host/client/prompt 三个套件） |
+| `npm run typecheck` | tsc -p . 全量类型检查（镜像自增 tsconfig；上游 tests/ 未随包发布，暂无测试门禁） |
 | `npm run check` | 语法检查三个入口（node --check lib/index.js、lib/client.js、lib/prompt.mjs） |
 | `npm ci` | CI 安装（仓库无依赖，秒级） |
 
-CI（ci.yml）：Node 22.x / 24.x 双版本矩阵，`npm run check` → `npm test`，无构建步骤。
+CI（ci.yml）：Node 22，`npm ci` → `npm run typecheck`（0.3.4 同步时重写；npm 包不含 build 脚本与测试）。
 
 ## 代码风格约定
 

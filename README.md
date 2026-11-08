@@ -1,261 +1,316 @@
 # dsh-prompt-enhance
 
-> ⚠️ **源码版本落后于 npm 版本。** 本仓库 `main` 对应 `v0.2.1`（约 1.1k 行）；npm 上最新的 `0.2.7`（约 2.2k 行）是一次重构后的另一套实现（schemastery 配置体系、SSE 流式、上下文感知、速率限制），尚未回流本仓库。**从 npm 安装得到的代码与本仓库源码不一致**，审计请以 npm 包内容为准。回流后本节会删除。
+> 🪞 **镜像同步声明（wjf1，2026-11-08）**：本仓库是 npm 包 [`dsh-prompt-enhance`](https://www.npmjs.com/package/dsh-prompt-enhance)（maintainer: rongxingda，上游仓库 `rongxingda/dsh-prompt-enhance`，Apache-2.0）的第三方镜像，`main` 当前同步至 **0.3.4**。上游代码归属原作者（Apache-2.0）；仓库自有文件（`.github/`、`HANDOFF.md`、`AGENTS.md`、`tsconfig.json`、`docs/` 截图）归 wjf1。npm 包不含 `tsconfig.json` 与 `scripts/build.mjs`（上游构建件），镜像以自增 tsconfig 支持 `npm run typecheck`；上游未随包发布测试，镜像暂无测试门禁。
 
-DeepSeek Harness 的「增强提示词」插件：输入框右侧（模型选择器左边）多一个 ✨ 按钮，点一下就把草稿改写成更具体、更可执行的提示词；支持**多层撤销**与**逐字差异对比**。交互对标 WorkBuddy 的 ✨。
+[![CI](https://github.com/rongxingda/dsh-prompt-enhance/actions/workflows/ci.yml/badge.svg)](https://github.com/rongxingda/dsh-prompt-enhance/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dsh-prompt-enhance)](https://www.npmjs.com/package/dsh-prompt-enhance)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
-![增强后出现撤销与差异按钮](docs/02-enhanced.png)
+**Prompt enhancement for the [DeepSeek Harness](https://github.com/deepseek-ai) web GUI** — one click turns a rough composer draft into a well-structured prompt: explicit role and goal, executable steps, output format, acceptance criteria, and edge cases. Your intent is never changed, nothing is fabricated, and the original draft is always preserved.
 
-```
-草稿「帮我写个周报」
-   ↓ 点 ✨
-草稿「请帮我撰写一份本周工作周报，要求：1) 分「本周进展 / 风险与阻塞 / 下周计划」三段…」
-   ↓ 再点一次
-草稿「帮我写个周报」   ← 原文完整恢复
-```
-
-## 为什么不是直接调 WorkBuddy 的增强模型
-
-WorkBuddy 的 ✨ 走的是官方客户端专用模型 `global:enhance-1.0`（Enhance-1.0），中继要求请求带官方客户端签名，第三方调用一律被渠道校验挡掉（`request illegal` / `no_healthy_account`）。因此本插件复用 DSH 自己的 chat 模型 + **逐字复刻的 WorkBuddy 增强提示词**（`lib/prompt.mjs`），效果对齐而不依赖官方客户端。
-
-## 结构（一个包，两个半边）
-
-| 半边 | 文件 | 职责 |
-| --- | --- | --- |
-| 宿主 | `lib/index.js` | 注册 `POST /dsh-prompt-enhance/api/enhance`，校验浏览器会话，单轮调用 `ctx.llm.stream()`，无工具、不写会话历史 |
-| 浏览器 | `lib/client.js` | 在 `conversation.input.right` 槽位渲染 ✨ 按钮，读写草稿、维护撤销点 |
-| 提示词 | `lib/prompt.mjs` | 逐字复刻的 system prompt + user prompt 模板 + 输出清洗 |
-
-### HTTP 契约
-
-```
-POST /dsh-prompt-enhance/api/enhance
-  body: {
-    "text": "<草稿原文>",                      # 必填，上限 20000 字符，body 上限 256KiB
-    "provider": "acme",                       # 可选：界面当前模型，宿主按白名单校验
-    "model": "cn:deepseek-v4.1-flash",        # 可选
-    "reasoningEffort": "max"                  # 可选
-  }
-  200 : {"text": "<增强后的提示词>", "provider": "...", "model": "...", "followed": true|false}
-  400 : EMPTY_INPUT | INPUT_TOO_LONG | INVALID_JSON
-  401/403 : 无浏览器会话（隧道或未登录外部访问）
-  405 : METHOD_NOT_ALLOWED
-  502 : LLM 失败（NO_ADAPTER / AUTH / RATE_LIMIT / CONTEXT_WINDOW_EXCEEDED …）
-  503 : 宿主没有 llm 服务
-  504 : TIMEOUT（默认 120s）
-
-GET /dsh-prompt-enhance/api/health
-  200 : {"ok":true,"provider":"acme","model":"cn:deepseek-v4.1-flash"}
-```
-
-`provider`/`model`/`reasoningEffort` 只接受 `[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}` 形状的标识符；任一不合法就整组忽略、退回插件默认模型，请求体无法决定任意上游路由。
-
-认证复用 `dsh-client-connection` 的浏览器 Cookie 校验：DSH Web 端口可能被 cloudflared 隧道暴露（本机曾见 `59543`、重启后为 `56531`），没有这层栅栏，本端点会变成公网可用的免费模型代理。
-
-### 客户端交互细节
-
-- 空草稿 → 按钮置灰；有草稿才可点。
-- 点击 → 转圈；**加载中再点 = 取消**（abort 请求，草稿不动）。
-- 成功 → 原地替换草稿，旁边出现两个小按钮：**↺ 撤销**（可逐层回退，最多 8 层）与 **⇄ 差异**。
-- **多层撤销**：对已增强的文本再点 ✨ 会再增强一层并压栈，↺ 一次退一层，退到栈空回原文。
-- **差异高亮**：增强后自动弹出对比卡（逐字标出删除线与新增高亮、处数与净增字数），Escape 关闭，卡片上可直接「撤销」。
-- 用户在等待期间改了草稿 → **放弃增强结果**，绝不覆盖用户输入。
-- 成功后又继续编辑 → 撤销栈作废、差异卡关闭，不会把旧文本盖回来。
-- 失败 → 按钮短暂变红，hover 显示中文原因，再点即重试。
-- **跟随界面当前模型**：客户端把模型选择器里的 `provider/model/推理档` 带进请求，宿主校验格式后透传给 `ctx.llm.stream`；读不到模型时退回插件配置的默认模型。
-
-### 差异卡的可读性约定（0.2.1）
-
-差异卡此前按深色主题挑色（`#7ee2a8` / `#ff9d98`），浅色主题下是「浅色字压白底」——实测对比度只有 1.5:1 / 1.8:1，远低于 WCAG AA 的 4.5:1。现在：
-
-- 新增段 `color: inherit`（跟随主题正文色）+ 20% 绿底 + 底部绿线；删除段文字由 `color-mix(in srgb, currentColor 82%, #b91c1c)` 推导 + 删除线。实测浅色 14.0:1 / 13.1:1、深色 10.5:1 / 7.9:1。
-- 不只靠颜色区分：新增带下划线色块、删除带删除线，卡片底部还有「新增 / 删除」色块图例。
-- 正文 13px / 行高 1.6，差异段按换行切行渲染（长提示词不再是"一大坨"）。
-- 浮层锚在整张输入卡上方（不是 ✨ 按钮），高度按可用空间算，超长时正文内部滚动；宽度 `min(560px, 100vw − 24px)` 并随窗口尺寸重新定位。
-
-## 真机验收（2026-10-19，DSH 重启后实测）
-
-位置与 WorkBuddy 对齐：✨ 落在 `conversation.input.right` 槽位，`order: 50`，排在视觉路由的「识图」（order 40）之后，**紧贴模型选择器左侧**。
-
-| 步骤 | 实测结果 | 证据 |
-| --- | --- | --- |
-| 空草稿 | 按钮置灰不可点（`disabled=true`，title「增强提示词」） | `docs/03-disabled.png` |
-| 输入「帮我写个周报」 | ✨ 亮起，位于「Deepseek-V4.1-Flash」左侧 | `docs/01-before.png` |
-| 真实点击 ✨ | 转圈 → 原地改写成结构化提示词，右侧出现 ↺（撤销）与 ⇄（差异）两个小按钮 | `docs/02-enhanced.png` |
-| 差异卡 | 增强完成自动弹出（portal 到 `body`，浮在输入卡上方，不遮草稿），逐字绿底新增 / 红底删除线，Escape 关闭；实测 560×337、`overlapsComposer=false` | `docs/04-diff.png` |
-| 主题可读性 | 新增/删除文字色都由主题色推导：浅色 14.0:1 / 13.1:1，深色 10.5:1 / 7.9:1（均 ≥ WCAG AA 4.5:1） | `getComputedStyle` 实测对比度 |
-| 多层撤销 | 连点两次 ✨（depth 2）→ ↺ 一次退到第一版（93 字）→ 再 ↺ 逐字回到原文「帮我写个周报」，撤销按钮消失、父节点从 `span.dsh-prompt-enhance__group` 退回裸按钮 | 浏览器断言 `data-depth` 2→1→0 |
-| 模型跟随（界面侧） | 拦截请求体实测 `{"text":…,"provider":"acme","model":"cn:deepseek-v4.1-flash","reasoningEffort":"max"}`——模型选择器当前档位被完整带进请求 | fetch 录制 |
-| 模型跟随（宿主侧） | 显式传 `cn:deepseek-v4-pro` + `high` → 200、响应回显该模型且 `followed:true`；传非法标识符 `../etc/passwd` → 回落 `cn:deepseek-v4.1-flash`、`followed:false` | 同源 fetch 直测 |
-| 同源 API 直测 | 200 正常；空白→`EMPTY_INPUT`；坏 JSON→`INVALID_JSON`；超长→`INPUT_TOO_LONG` | 均为 400，符合契约 |
-
-改代码后的生效方式：**客户端半（`lib/client.js`）改完刷新页面即可**（bundle 每次页面加载重新取），宿主半（`lib/index.js`、`lib/prompt.mjs`）必须重启 DSH。
-
-### 开发调试：怎么拿到带认证的 GUI URL
-
-DSH Web 只认 `dsh web` 打印的带 token 链接，直连端口会看到 `dsh web authentication required`。仓库里的 `tools/gui-cookie.mjs` 用本机凭据库换出一枚短期会话 Cookie，方便在浏览器或自动化脚本里走查（**只在本机使用，不要外传它打印的 Cookie**）：
-
-```powershell
-cd $env:USERPROFILE\.dsh\dsh-prompt-enhance
-node tools\gui-cookie.mjs --check 127.0.0.1:<port>        # 校验：打印 Cookie 并用它请求一次 GUI
-node tools\gui-cookie.mjs --serve 59611 127.0.0.1:<port> # 本地跳板：浏览器打开 http://127.0.0.1:59611/
-```
-
-端口每次启动 DSH 都会变，以启动横幅 / runtime context 显示的为准；跳板端口（59611）可固定，只需换掉第二个参数。
-
-## 配置
-
-`cordis.patch.yml` 里的行可以带 `config`，逐键覆盖 `lib/index.js` 的 `DEFAULTS`：
-
-```yaml
-- insert:
-    - id: dsh-prompt-enhance
-      name: 'dsh-prompt-enhance'
-      config:
-        provider: acme                    # 客户端读不到界面模型时用它
-        model: cn:deepseek-v4.1-flash
-        reasoningEffort: ''              # 空 = 不显式传推理档
-        maxInputChars: 20000
-        timeoutMs: 120000
-        systemPrompt: ''        # 非空则整体替换内置 system prompt
-```
-
-## 安装
-
-```bash
-dsh plugin add github:wjf1/dsh-prompt-enhance     # 装进当前 profile
-# 或在插件市场（dshmarket）里搜 dsh-prompt-enhance 后一键安装
-```
-
-装完**需要重启一次 DSH**：宿主半的路由在插件图构建时注册。之后只改 `lib/client.js` 的话刷新页面即可生效。
-
-卸载：`dsh plugin remove dsh-prompt-enhance`（或从 profile 的 `dsh.profile.bundles` 删掉该行），重启。
-
-本地开发态（不经过 registry，直接链目录）：
-
-```powershell
-$src = "$env:USERPROFILE\.dsh\dsh-prompt-enhance"          # 本仓库位置
-$profile = "$env:USERPROFILE\.dsh\profiles\desktop"        # 你的 profile 目录
-cmd /c mklink /J "$profile\node_modules\dsh-prompt-enhance" "$src"
-# 再把 "dsh-prompt-enhance" 加进 $profile\package.json 的 dsh.profile.bundles，重启 DSH
-```
-
-## 测试
-
-```powershell
-cd $env:USERPROFILE\.dsh\dsh-prompt-enhance
-node --test "tests/*.test.mjs"        # Node 22+，33 个用例
-```
-
-- `tests/host.test.mjs`：路由守卫、认证栅栏、空/超长/坏 JSON、模型错误透传、空增强、缺 llm 服务。
-- `tests/prompt.test.mjs`：两份模板的语言约束与示例未被删、`$` 序列不被替换、围栏/引号清洗。
-- `tests/client.test.mjs`：用最小 hook 运行时驱动组件，验证「点击→busy→替换→撤销→取消→被用户编辑时放弃→失败重试」全部状态迁移。
-
-## 已知边界
-
-- 只做单轮增强，不带会话上下文（与 WorkBuddy 一致）；想要「结合历史」需要另设计。
-- 模型跟随依赖客户端能读到 `modelDirectories`：读不到（服务缺失、会话无目录）就静默回落配置里的 `provider/model`，不会报错给用户。
-- 撤销栈最多 8 层，且**等待期间用户改动草稿会整栈作废**（避免把旧文本盖回来）。
-- 差异高亮是词级 LCS（空白/单汉字/拉丁词/单字符切分），token 上限 800；超长草稿会退化成正文字符级对比。
-- 客户端半改动刷新页面即生效；但**如果刷新前 bundle 已被浏览器/服务端缓存**，要确认页面确实拿到了新文件（本次踩过一次：restart 与手改代码交错，首屏是旧 bundle，现页刷新后才出现 ↺/⇄ 与 `span.dsh-prompt-enhance__group`）。
-- 客户端半的样式用内联 `<style>` 注入（id `dsh-prompt-enhance-style`），类名统一 `dsh-prompt-enhance__` 前缀避免与其它插件撞车。
-
-## 与已有插件的关系
-
-生态里已有若干「提示词增强」类插件（例如 npm 上的同名包 `dsh-prompt-enhance`，作者 rongxingda）。本仓库是**独立实现**，没有复用它们的代码，差异在于：
-
-- 提示词是对 WorkBuddy 增强功能的**逐字复刻**（`lib/prompt.mjs`），不是通用「优化」模板；
-- **多层撤销栈**（最多 8 层）——增强结果可以再增强，逐层回退；
-- **逐字差异对比卡**——增强后自动弹出，标出新增/删除与处数、净增字数，可直接在卡上撤销；
-- **跟随界面当前模型**：模型选择器换了档位，下一次增强就跟着换，无需另配「增强专用模型」。
+English | [简体中文](./README.zh-CN.md)
 
 ---
 
-## English
+## Why
 
-A DeepSeek Harness plugin that puts a ✨ button left of the model selector in the composer. One click rewrites the draft into a clearer, more executable prompt; the original is always recoverable.
+Good agent prompts state *who the model should be*, *what to deliver*, *in what format*, and *how success is judged*. Most drafts don't. This plugin adds a **WorkBuddy-style "enhance" affordance** to the dsh composer: it sends your draft through a low-temperature rewrite pass (via the harness's own LLM service), shows the result next to the original, and lets you apply, copy, or discard it. Undo is one click away, and every failure path leaves your draft exactly as you typed it.
 
-### Features
-
-- **One-click rewrite** of the composer draft, in place — no dialog, no send.
-- **Multi-level undo** (up to 8 layers): enhance an already-enhanced draft and step back one layer at a time with `↺`.
-- **Token-level diff** (`⇄`, shown automatically after each enhancement): added/removed spans with counts and net character delta, opened as a card above the composer. `Escape` closes it; "撤销 / Undo" is one click away.
-- **Follows the session model**: the client sends the provider/model/reasoning effort currently selected in the model picker; the host validates the shape and falls back to the configured default if it cannot read it.
-- **Host-side LLM call only**: the browser never sees an API key. The route sits behind the browser-session cookie fence (`dsh-client-connection`), so a tunnelled port cannot be abused as a free model proxy.
-- **Safe by default**: empty draft → button disabled; clicking while a request runs cancels it; editing the draft while waiting discards the result instead of overwriting your text; failures turn the button red with a Chinese reason and clicking again retries.
-
-### Install
-
-```bash
-dsh plugin add github:wjf1/dsh-prompt-enhance
-```
-
-Restart DSH once so the host half registers its route. Changes to `lib/client.js` alone take effect on page refresh.
-
-### HTTP API
-
-```
-POST /dsh-prompt-enhance/api/enhance
-  {"text": "<draft>", "provider": "acme", "model": "cn:deepseek-v4.1-flash", "reasoningEffort": "max"}
-  → 200 {"text": "<enhanced>", "provider": "...", "model": "...", "followed": true|false}
-  → 400 EMPTY_INPUT | INPUT_TOO_LONG | INVALID_JSON
-  → 401/403 no browser session
-  → 405 METHOD_NOT_ALLOWED
-  → 502 LLM failure (NO_ADAPTER / AUTH / RATE_LIMIT / CONTEXT_WINDOW_EXCEEDED …)
-  → 503 no LLM service in the host
-  → 504 TIMEOUT (default 120 s)
-
-GET /dsh-prompt-enhance/api/health
-  → 200 {"ok": true, "provider": "...", "model": "..."}
-```
-
-`provider` / `model` / `reasoningEffort` must match `[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}`; if any of them does not, the whole override is ignored and the configured default is used.
-
-### Why not call WorkBuddy's own enhance model
-
-WorkBuddy's ✨ uses the official-client-only model `global:enhance-1.0`; the relay rejects third-party callers (`request illegal` / `no_healthy_account`). This plugin reuses DSH's own chat model with WorkBuddy's enhancement prompts copied verbatim (`lib/prompt.mjs`), so the wording matches without depending on the official client.
-
-### Configuration
-
-Any key of `DEFAULTS` in `lib/index.js` can be overridden through the plugin's `config` block in the profile patch:
-
-```yaml
-- insert:
-    - id: dsh-prompt-enhance
-      name: 'dsh-prompt-enhance'
-      config:
-        provider: acme                 # used when the client cannot read the session model
-        model: cn:deepseek-v4.1-flash
-        reasoningEffort: ''            # empty = do not send an explicit effort
-        maxInputChars: 20000
-        timeoutMs: 120000
-        systemPrompt: ''               # non-empty replaces the built-in system prompt
-```
-
-### Tests
-
-```powershell
-node --test "tests/*.test.mjs"
-```
-
-33 cases across three suites: host route guards/authentication/model-failure passthrough, prompt template integrity and output cleaning, and the client state machine driven by a minimal hook runtime (click → busy → replace → undo → cancel → discard-on-edit → retry).
-
-### Known limitations
-
-- Single turn, no conversation context — matching WorkBuddy's behaviour.
-- Model following needs `modelDirectories` on the client; when unavailable it silently falls back to the configured default.
-- Undo stack holds at most 8 layers, and editing the draft while a request is in flight clears it.
-- Diff is word-level LCS with an 800-token cap; longer drafts degrade to a character-level comparison.
-
-### Screenshots
+## Features
 
 | | |
-| --- | --- |
-| ![before](docs/01-before.png) | ![enhanced](docs/02-enhanced.png) |
-| Draft with the ✨ button enabled | After enhancement: `↺` undo + `⇄` diff appear |
-| ![disabled](docs/03-disabled.png) | ![diff](docs/04-diff.png) |
-| Disabled while the draft is empty | Diff card: added/removed spans and counts |
+|---|---|
+| ✨ **Composer button** | A small button in the input box's tool row (next to the send button), always at hand |
+| 🔀 **Preview panel** | Original vs. enhanced side by side, with model name and elapsed time |
+| ↩️ **One-click undo** | After applying, a quiet bar above the composer restores the original draft |
+| ⌨️ **Shortcut** | Default `Ctrl+Alt+E`, fully configurable, acts on the composer you are working in |
+| 💬 **`/enhance` command** | Rewrite any text from the slash-command plane; the result never enters model history |
+| 🧠 **Model routing** | Settings pair → current session model → harness default model, in that order |
+| 🔑 **Zero credential setup** | Calls ride the harness LLM service; keys come from the harness credential store |
+| ⚙️ **Live settings** | Every knob (model override, temperature, budgets, system prompt, shortcut) hot-applies from Settings → 插件配置 |
+| 🛡️ **Draft safety** | Empty, over-length, images-only, and command-chip inputs are rejected locally; upstream failures are mapped to readable messages; the draft is never mutated on failure |
 
-### License
+![The preview panel running in dsh web: original and enhanced prompt side by side with model info, fill-back and copy actions](https://raw.githubusercontent.com/rongxingda/dsh-prompt-enhance/main/docs/evidence-prompt-enhance-panel.png)
 
-MIT
+## How it works
+
+```mermaid
+flowchart LR
+    A[Composer draft] --> B{Local guards<br/>empty / length / chips / busy}
+    B -- pass --> C["POST /prompt-enhance/enhance<br/>(loopback-fenced host route)"]
+    B -- reject --> P[Preview panel:<br/>readable error, draft untouched]
+    C --> D["ctx.llm.stream<br/>rewrite with system strategy"]
+    D --> E[Normalize:<br/>strip fences, trim, refuse empty]
+    E --> F[Preview panel:<br/>original / enhanced]
+    F -- Apply --> G["setDraft(enhanced)<br/>original pushed to undo stack"]
+    F -- Cancel / Copy --> H[Draft untouched]
+    G --> U[Undo bar: one click restores]
+```
+
+The plugin is one npm package with two halves, following the dsh plugin conventions:
+
+- **Host half** (`exports "."`, Node): declares the `prompt-enhance` settings schema (schemastery, every field marked `.volatile()` — the host's `describe()` **drops any entry with no volatile field**, so that mark is both what makes the config page appear and the contract for "edits apply to the next request"; the plugin **re-reads it on every request** instead of caching the boot snapshot), registers the `POST /prompt-enhance/enhance` route on the shared webserver (loopback-fenced, body-capped), and the `/enhance` slash command. The model call goes through `ctx.llm.stream` with a normalized output pass — the same auxiliary-call discipline the harness applies to session titles: deadline + caller cancellation rechecked during and after the stream, terminal-finish validation, tool-call rejection.
+- **Browser half** (`exports "./client"`): registers the enhance button into the `conversation.input.right` slot and the undo bar into `conversation.input.dock`, binds a live mirror of the settings namespace, and installs the global shortcut. All copy is localized (zh/en) through the harness locale system.
+
+## Requirements
+
+- `dsh >= 0.1.1-rc.2 < 0.3.0` — the range states what has actually been exercised, not an open-ended promise.
+- Boot-verified on `0.1.1-rc.2`, `0.1.2-alpha.3`, `0.1.7-rc.2`, `0.2.0-rc.2`, `0.2.1-rc.2`, and **`0.2.1-rc.5`** (layer mounts, enhance route answers, client bundle builds; on alpha the plugin takes the newer `ctx.settings.installSection` registration path, and on `0.2.0-rc.2` it also passes the runtime's plugin-compatibility gate). `0.2.1-rc.5` was checked by diffing every `@deepseek-ai/dsh-*` package the plugin builds against: apart from `dsh-client-ui-conversation`, whose `lib/` gained a View-tabs More menu and a `whenDraftExists` option on draft initialization, the published trees are **byte-identical** to `0.2.1-rc.2`, and none of the additions touch a contract this plugin uses. On a temporary profile at `rc.5` the plugin composed into the loader tree, `/prompt-enhance/enhance` answered with a real model result, `/enhance-stream` emitted live SSE deltas, and the host's own schema dump showed the entry as `config100` with **every field carrying `x-cordis.volatile`** — 16 of 16 on that run, 17 of 17 once `reasoningEffort` landed — the exact condition `SettingsForms.describe()` checks before it renders a page. The `0.2.1-rc.2` check is a **real-host end-to-end smoke**: with the local build installed into a temporary profile, the enhance route returned a real model result; setting that profile's `maxInputChars` to `300` made a 400-character draft fail with `422 {count: 400, max: 300}`, and after editing the same profile to `20000` — **without restarting** — the identical draft went through, so a settings edit reaches the *next* request instead of staying at the boot-time snapshot. The `0.2.0-rc.2` checks include the **dsh desktop application** — the environment this plugin is normally used in. On a `0.2.x` runtime expect some *other* plugins to disappear from the UI: the gate skips any bundle whose `peerDependencies` pin an older `@deepseek-ai/dsh-*` range (observed: `dshmarket`, `dsh-find-plugin`, `dsh-better-sidebar`). The harness has broken several of the APIs this plugin touches: `@deepseek-ai/dsh-settings` changed its registration entry between the two early lines, from `0.1.5-rc.3` the settings service became `SettingsForms` (no synchronous `get`), and `0.2.x` **deleted the `installSettingsSection` / `settingsNamespace` exports outright**; `dsh-agent-default-model` moved the harness default model behind its own `ctx.agentDefaultModel.currentSelection()` service; and the browser-side settings mirror moved from `ctx.settingsScope` to `ctx.configForms`. The plugin probes every generation at runtime and adapts, no configuration needed.
+- The ceiling covers the whole `0.2.x` line (including its prereleases); a `0.3.x` is untested and therefore outside the range. `dsh.engines` **is enforced**: the host's boot preflight marks a mismatched entry `disabled = true`, and only an explicit `--accept-risk` gets past the throw (`Incompatible plugins may cause crashes or data loss`). A wrong range means the plugin does not load — not that it loads with a warning.
+- Node `^22.19.0 || >=24.0.0` (for building from source)
+- Browser peers `react` / `react-dom` (`^18.2.0`) come from the web shell's module registry. The host-half module `@deepseek-ai/dsh-llm` is a **runtime module supplied by the dsh host and is not installed from npm** (the `lib/` bundles keep every package import external), so it is declared as an *optional* peer: an install that does not provide it produces no warning, and the plugin reports a normal error at enhance time rather than failing to load.
+
+| | |
+|---|---|
+| dsh | `>= 0.1.1-rc.2 < 0.3.0` |
+| Node | `^22.19.0 \|\| >=24.0.0` |
+| Plugin | `0.3.x` |
+
+## Install
+
+From npm (recommended):
+
+```bash
+dsh plugin --profile web add dsh-prompt-enhance
+# restart dsh web
+```
+
+From GitHub (the built `lib/` is committed, so no local build happens):
+
+```bash
+dsh plugin --profile web add github:rongxingda/dsh-prompt-enhance
+```
+
+From a local checkout (for development — changes rebuild + restart take effect):
+
+```bash
+git clone https://github.com/rongxingda/dsh-prompt-enhance.git
+cd dsh-prompt-enhance && npm install && npm run build
+dsh plugin --profile web add link:C:\path\to\dsh-prompt-enhance
+```
+
+Uninstall:
+
+```bash
+dsh plugin --profile web remove dsh-prompt-enhance
+# check the profile's package.json `dsh.profile.bundles` array for a leftover
+# "dsh-prompt-enhance" row and remove it if present, then restart dsh web
+```
+
+## Usage
+
+**Composer button / shortcut** — type (or leave) a draft, hit ✨ or `Ctrl+Alt+E`:
+
+1. Local guards run first: empty drafts, over-length drafts (never auto-truncated — that would change your meaning), images-only drafts, and drafts containing command or file-reference chips are refused with a clear message. Chips are rejected because filling back would destroy them.
+2. The preview panel opens with a cancellable spinner. Your draft stays untouched — the hint says so.
+3. The result phase shows both texts side by side. **Apply** fills the enhanced text back and raises the undo bar; **Copy** puts it on the clipboard; **Cancel** (or `Esc`, or clicking the overlay) discards everything.
+4. The undo bar sits above the composer: one click restores the original. If you keep typing after applying, the bar quietly retires itself so stale text can never overwrite newer edits. Undo entries live **only in the current page's memory** (up to 3 per session) — a page reload, a web restart, or a session switch clears them.
+
+**`/enhance <text>`** — rewrite any text from the slash menu. The result renders in the command plane (copyable) and never enters the conversation history or the model's context. To enhance the *composer draft itself*, use the button or shortcut — the draft lives in the browser. Cancelling a running `/enhance` follows the harness command plane; if the client offers no cancel affordance, the call simply runs to completion or times out.
+
+**Language consistency**: the strategy instructs the model to mirror the input language (Chinese in → Chinese out). This is a best-effort instruction, not a hard guarantee.
+
+## Configuration
+
+Everything lives in the `prompt-enhance` settings namespace, edited from the web GUI's **Settings → 插件配置** page. Changes apply to the very next call — no restart. Every enhancement is one billable LLM call: `reasoningEffort` and `maxOutputTokens` bound how many tokens it spends, and the host-side concurrency/rate caps bound how often calls can be made.
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Master switch; off hides the button and disables every trigger |
+| `provider` + `model` | empty | Explicit route override; must be filled as a **pair** (or both empty to follow the current session model) |
+| `temperature` | `0.3` | Low temperature keeps the rewrite faithful to the original |
+| `reasoningEffort` | `off` | Reasoning budget sent with the call: `off` / `low` / `high` / `inherit` (omit the field and follow the model's own default). A rewrite is a short, well-specified task, so the model's default budget is pure waste — measured on one and the same draft: `high` spent **2897** output tokens where `off` spent **252**, an 11× difference for the same rewrite. Models that declare no reasoning capability are handled: the harness rejects an explicit effort with `UNSUPPORTED_REASONING_EFFORT`, and the call is retried once with the field omitted, so this setting never breaks such a route |
+| `maxOutputTokens` | `8192` | Output token budget of one enhancement call |
+| `maxInputChars` | `12000` | Input character cap (counted in Unicode code points — an emoji is one character); over-limit drafts are **rejected, never truncated** |
+| `timeoutMs` | `60000` | End-to-end deadline of one call |
+| `systemPrompt` | built-in strategy | Custom strategy text; how it combines with the built-in strategy is set by `strategyMode` |
+| `strategyMode` | `replace-default` | How a custom strategy combines with the built-in one: `replace-default` **swaps it out entirely** (backward compatible, but the built-in hard rules — preserve intent, never fabricate, body-only output, language mirroring — are not retained and must be carried into your own text); `extend-default` **appends your text after the built-in strategy**, keeping those rules in force |
+| `shortcut` | `ctrl+alt+e` | Global shortcut spec (at least one modifier + one alphanumeric/function key — bare keys are ignored so normal typing can never be swallowed); empty disables it |
+| `maxConcurrent` | `2` | Concurrency cap **within a single host process**; extra requests answer `429` (`concurrency-limit`). The browser UI admits exactly one in-flight request (a single preview panel), so this cap mainly protects the `/enhance` command plane and multi-client callers |
+| `rateLimitPerMinute` | `10` | Sliding-window rate cap per minute, **within a single host process**, counting **successful calls only** — failures (timeout / upstream error / cancellation) never consume the window, so a run of failures cannot rate-limit you out; extra requests answer `429` (`rate-limit`) with a `Retry-After` in seconds |
+| `streaming` | `true` | Show the model's output as it streams instead of waiting for the whole rewrite — **display-only**, the final text is still the normalized full result, and the client transparently falls back to the one-shot JSON route when the host or network does not support `text/event-stream` |
+| `contextAware` | `true` | Read the current conversation's recent history and use it to ground the rewrite (resolve pronouns, fill in stated constraints, mirror the established stack and terminology). With no session, no history, or this switch off, the call degrades to the original single-prompt enhancement — context is an optimization, never a prerequisite. **Privacy:** the assembled history snippet is sent to the configured LLM alongside the draft — if the conversation contains secrets, tokens, or other sensitive content, switch `contextAware` off (or scope the conversation before enhancing). |
+| `contextMaxMessages` | `8` | Context window breadth — how many recent `user`/`assistant` turns may ground the rewrite; `0` admits none |
+| `contextMaxChars` | `4000` | Context window depth — character budget of the assembled history snippet, spent newest-first so the most recent turns win when the budget is tight; `0` admits none |
+| `provider` + `model` values | — | Match the harness settings: each key under `llm-pi-ai.providers` (e.g. `zhipu`, `muyuu`) is a provider and each `models[].id` under it (e.g. `glm-5.3-flash`) is a model. Example pair: `provider: zhipu` + `model: glm-5.3-flash` |
+
+**Model routing precedence:** explicit settings pair → the route recorded in the current session's request header → the harness-wide default model (`agent-default-model`). If none of them names a route (e.g. a fresh session with no default model), the plugin fails with an actionable message instead of guessing.
+
+## The built-in enhancement strategy
+
+The default system prompt instructs the model to be a prompt-rewriting expert and to apply what the draft actually needs:
+
+1. **Role and goal** — state who the assistant acts as and what the deliverable is.
+2. **Context and constraints** — add only what the draft implies; never invent facts, data, names, or requirements.
+3. **Steps** — break vague or multi-part requests into numbered, executable steps.
+4. **Output format** — specify structure, language, length, and style where implied.
+5. **Acceptance criteria** — state how to recognize a correct result.
+6. **Boundary conditions** — list edge cases and what to do when information is missing.
+
+Hard rules: preserve intent exactly (never remove, alter, or contradict user information); never fabricate — insert an explicit placeholder like `(待补充：…)` / `(TBD: …)` for unknown details; keep the scope unchanged; output **only** the rewritten body (no explanations, fences, or pleasantries); mirror the input language; stay within roughly 1–3× the original length; lightly polish already-well-formed prompts instead of inflating them.
+
+Set `systemPrompt` in the settings to use your own strategy; `strategyMode` decides how it combines. The default `replace-default` is a **complete replacement** — the built-in safety constraints (preserve intent, never fabricate, body-only output, mirror the input language, treat the framed draft as data) are not retained automatically, so your own strategy must include them. Switching to `extend-default` appends your text after the built-in strategy instead, keeping those rules in force.
+
+## Error handling & edge cases
+
+| Case | Behavior |
+|---|---|
+| Empty / whitespace / invisible-only draft | Local refusal: "input box is empty" |
+| Draft over `maxInputChars` | Rejected locally and at the route with exact counts; **no auto-truncation** |
+| Images attached but no text | Refused: text-only feature |
+| Command or file-reference chips in the draft | Refused: fill-back would destroy the chips |
+| Submitting / busy phase or a request already in flight | Refused with "try again in a moment" |
+| Per-minute cap exceeded | `429` (`rate-limit`) with a `Retry-After` in seconds; the host message names the exact wait. The window counts successful calls only — failures do not consume it |
+| Concurrency cap full | `429` (`concurrency-limit`), no `Retry-After` — a slot frees whenever an in-flight call settles |
+| Upstream model failure | Stable codes mapped to readable hints: `AUTH` → check API key, `RATE_LIMIT` → retry later, `QUOTA_EXCEEDED` → check balance, `CONTEXT_WINDOW_EXCEEDED` → shorten input, `NO_ADAPTER`/unconfigured → configure a model |
+| Output reaches `maxOutputTokens` | Refused with a hint to raise the cap or shorten the draft |
+| Route's model declares no reasoning capability | The `UNSUPPORTED_REASONING_EFFORT` refusal is not shown: the effort is dropped and the call retried once. `reasoningEffort: inherit` never sends the field, so it never hits this path |
+| Model returns empty / fence-wrapped / tool-call output | Normalized (fences stripped) or refused; retryable |
+| Timeout | `504`-mapped message with the configured seconds; retryable |
+| Browser tab closed mid-flight | The host route detects the disconnect and aborts the model call |
+| Session switch | Panel state, undo stack, and shortcut targeting are per-session; switching closes the panel and clears its undo entries |
+
+Every failure surfaces inside the plugin's own panel; the composer draft is never modified by a failed call, so manual input continues undisturbed.
+
+## Error codes & localization
+
+The host route answers structured errors of the shape `{ code, message?, params? }`: the browser renders its localized primary line from `code` + `params` using the current language dictionary, and `message` — when present — is an optional diagnostic detail (the provider's raw failure text, a config error) shown verbatim beneath the primary line. The `/enhance` command plane has no locale dictionary; a host-side renderer of the same errors produces the Chinese text directly.
+
+| Error code | HTTP status | Browser primary copy (dictionary key) | Params |
+|---|---|---|---|
+| `rejected` | 403 / 413 / 415 / 422 | generic `error.rejected`; with `{ count, max }` it reuses `error.tooLong` | over-length input: `{ count, max }` |
+| `rate-limit` | 429 | `error.rateLimit` | `{ limit, retryAfterSeconds }` |
+| `concurrency-limit` | 429 | `error.concurrencyLimit` | `{ max }` |
+| `timeout` | 504 | `error.timeout` | `{ seconds }` |
+| `unconfigured` | 409 | `error.unconfigured` | — |
+| `upstream` | 502 | generic `error.upstream`; with `reason` it uses `error.upstream.{reason}` (`auth` / `invalidCredential` / `rateLimit` / `quota` / `empty` / `contextWindow` / `toolCall` / `maxTokens`) | `{ reason }` |
+| `internal` | 500 / 502 | `error.internal` | — |
+
+## Troubleshooting
+
+**Button missing / shortcut dead**
+Settings → 插件配置 → `prompt-enhance` section: is `enabled` true? Is the plugin installed (`dsh plugin --profile web list`) and `dsh web` restarted? Any apply error in the browser console?
+
+**"No model resolved for the enhancement"**
+Routing follows settings pair → session model → harness default; if all three are empty there is nothing to call. Pair `provider`/`model` in the settings, or send a message in the current session first so it carries a model route. Check the `agent-default-model` settings section.
+
+**Authentication failures**
+The `message` detail line carries the concrete cause (e.g. 401). Check the provider's API key in the harness credential store; quota/balance problems surface as the `quota` hint.
+
+**Rate-limited (429) right after a run of failures**
+Should not happen — the window counts successes only. If it still does, check whether several profiles/processes are mounted (each counts independently and stacks up) or whether `rateLimitPerMinute` is set too low.
+
+**Poor rewrites (fabrication, dropped requirements, broken formatting)**
+With `strategyMode` set to `replace-default`, a custom `systemPrompt` replaces the built-in strategy entirely — its hard rules (never fabricate, body-only output, mirror the input language) are not retained automatically; carry them into your own text or switch to `extend-default`.
+
+**Behavior changed after upgrading**
+Since 0.1.6 the host no longer sends Chinese primary-line copy: the browser localizes errors by code (`message` is now only a diagnostic detail), and the `rate-limit` window counts successful calls only. No configuration change needed.
+
+## Security model
+
+The enhance route is served by your own dsh host and reachable **only from this machine**:
+
+- **Socket fence** — requests from non-loopback addresses are refused (`127.0.0.1` / `::1` only). Note this means *any local process* can call the route; it carries no user authentication.
+- **Host allowlist** — the route also validates the `Host` header against `localhost` / `127.0.0.1` / `[::1]`, which defeats DNS-rebinding (a rebound attacker domain keeps the loopback socket address but carries the attacker's hostname and is refused). Responses are `cache-control: no-store`.
+- **Abuse caps** — an `Origin` gate refuses browser calls from non-local pages, and from pages served by *any other* local port (the origin's port must equal the port the request was addressed to, so a dev tool on `localhost:4000` cannot spend your model quota); the route enforces a concurrency cap (`maxConcurrent`, default 2) and a per-minute rate limit (`rateLimitPerMinute`, default 10), answering `429` beyond either. Both counters live **in a single host process's memory**: multiple processes, a cluster, or several profiles mounting the plugin each count independently, so the global cap would be exceeded — this plugin supports single-process deployments only and ships no shared rate-limit store.
+- **Proxy rejection** — requests carrying `X-Forwarded-For` / `Forwarded` headers are refused outright: those headers only exist when a proxy is in the path, which the trust model does not cover.
+- **Request-level timeouts are the host's and Node's job** — the plugin bounds the body size (including a Content-Length fast reject) and the per-call `timeoutMs`; connection-level timeouts (headers / request timeout / keep-alive) are server-level settings on the shared `http.Server` that a prefix route must not touch, so they fall to the host and Node's defaults (60 s headers / 300 s request).
+- **Not for reverse-proxy exposure** — if you put dsh web behind a proxy that listens on the LAN, external callers appear as loopback to the route and the fence is moot. Do not expose a proxied host without adding your own authentication at the proxy.
+- **Prompt-injection boundary** — the draft is framed between `<raw_prompt>` tags, literal closing tags inside the draft are neutralized, and the strategy prompt treats the framed text as pure data. This lowers the risk of simple tag-escape; prompt-based boundaries are best-effort, not a guarantee. Enhancements run with your own credentials and the result is only ever shown back to you.
+- **Conversation-context data sharing** — when `contextAware` is on (default), the plugin assembles the recent `user`/`assistant` history of the current session (capped by `contextMaxMessages` / `contextMaxChars`) and sends it to the configured LLM alongside the draft. That history may carry secrets the user typed earlier in the session — API keys, tokens, internal hostnames, customer names — which the LLM provider will see verbatim. Treat the switch as the privacy boundary: turn it off (or end the session and start a fresh one before enhancing) when the conversation should not leave the machine. The hard rules on context use in the strategy prompt forbid introducing facts the raw prompt does not support, but they cannot un-share what has already been sent.
+
+## Architecture
+
+```
+src/
+├── index.ts            host apply(): settings section + route + command
+├── config.ts           schemastery schema + resolution (paired route validation)
+├── prompts.ts          built-in strategy system prompt + <raw_prompt> framing
+├── enhancer.ts         the ctx.llm auxiliary call (route resolution, deadline
+│                       racing, finish validation, structured errors + host render)
+├── enhance-routes.ts   POST /prompt-enhance/enhance + /enhance-stream (loopback
+│                       fence, body cap, admission gate)
+├── enhance-command.ts  /enhance slash command (host command registry)
+├── orchestrate.ts      shared route resolution + context assembly for both entries
+├── context.ts          bounded, neutralized <conversation_context> snippet
+├── loopback.ts         127.0.0.1/::1 fence for the route
+├── http.ts             bounded JSON body reader / writer
+├── sse.ts              backpressure-aware SSE frame writer
+├── shared/             wire protocol types, input checks, output normalization
+│                       (imported by both halves)
+└── client/             browser half
+    ├── index.tsx       slots registration + settings mirror + shortcut listener
+    ├── EnhanceButton   conversation.input.right entry: guards + call orchestration
+    ├── ResultPanel     overlay panel: compare / apply / copy / cancel / retry
+    ├── UndoBar         conversation.input.dock entry: restore affordance
+    ├── ui-state.ts     external store shared by components (panel, undo, sessions)
+    ├── enhance-client  fetch client with abort + typed errors (SSE + one-shot)
+    ├── undo-stack.ts   per-session LIFO (depth 3, global cap 60, LRU eviction)
+    ├── session-key.ts  per-composer UI key (host sessionId, else stable fallback)
+    ├── shortcut.ts     pure combo parsing / matching
+    ├── settings.ts     client mirror of the settings namespace
+    ├── locales.ts      zh + en dictionaries (harness locale namespace)
+    └── styles.ts       self-injected stylesheet (dsh-pe- prefixed classes)
+```
+
+Build outputs: `lib/index.js` (host half, ESM, package imports kept external) and `lib/client.js` (browser half bundled to CJS inside the `window.__ModuleLoader__.load({ id, factory })` envelope the dsh web shell expects). Both are committed so GitHub installs need no build step; CI fails if `lib/` drifts from `src/`.
+
+## Development
+
+Daily debug loop (link install + watch): install once via `dsh plugin --profile web add link:...`, run `npm run watch`, and restart `dsh web` after host-half changes — see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+```bash
+npm install
+npm run typecheck     # tsc --noEmit
+npm test              # unit + real-http + component suites
+npm run build         # typecheck + both halves
+npm run watch         # esbuild watch for both halves
+```
+
+**Test coverage:** input validation, output normalization, the enhancer against stubbed `ctx.llm` streams, a real-`node:http` route suite (loopback Host fence, disconnect abort, error envelopes), the loopback/Host fence units, prompt framing, config resolution, the undo stack, shortcut parsing, client settings, and React component tests locking the enhance → apply → undo flow (guards, stale marking, diverged-draft undo semantics).
+
+**Release process (maintainers):**
+
+```bash
+npm version patch   # or minor / major — bumps package.json and tags
+npm run build       # make lib/ match src/
+git push --follow-tags
+npm publish         # with 2FA OTP, or a granular token with "bypass 2FA" checked
+```
+
+CI runs typecheck + tests + build on every push/PR and rejects merges where `lib/` differs from the committed build.
+
+## FAQ
+
+**Why is my draft rejected when it contains `/commands` or `@references`?**
+The fill-back writes plain text via `inputActions.setDraft`, which would destroy the chips. Remove them, enhance, then re-insert.
+
+**Why isn't over-length input auto-truncated?**
+Truncation silently changes your meaning — the plugin refuses and shows the exact counts instead.
+
+**Can I pin a specific model?**
+Fill `provider` and `model` **as a pair** in the settings (e.g. your harness-configured provider route). Leave both empty to follow the current session's model.
+
+**Where does my draft go?**
+Browser → your own dsh host over a loopback-only route → the harness LLM service → the configured model provider. Nothing is sent anywhere else, and the enhancement never enters the session's model history.
+
+**Does it work with the official DeepSeek route?**
+Yes — it rides `ctx.llm`, so any provider the harness serves (DeepSeek official, OpenAI-compatible gateways) works.
+
+## Manual smoke checklist
+
+After installing and restarting `dsh web`:
+
+1. Settings → 插件配置 shows the `prompt-enhance` section.
+2. The ✨ button sits next to the send button; `Ctrl+Alt+E` triggers the same flow.
+3. Empty input → refusal panel; a valid draft → preview with model info; Apply fills back; Undo restores; Copy works.
+4. `/enhance <text>` renders a copyable result without touching model history.
+5. All three model routes work: pinned settings pair, a session's model, and the harness default.
+
+## Acknowledgments
+
+Plugin structure, the loopback fence, and the settings-section pattern follow the conventions established by the dsh plugin family — in particular [`@linxin666/dsh-tool-describe-image`](https://www.npmjs.com/package/@linxin666/dsh-tool-describe-image).
+
+## License
+
+[Apache-2.0](./LICENSE)

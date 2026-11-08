@@ -1,0 +1,123 @@
+/**
+ * Wire contract shared by the host route and the browser half: one enhance
+ * POST and its typed responses. Pure types and constants only, safe to
+ * bundle into both halves.
+ * @module dsh-prompt-enhance/shared/protocol
+ */
+
+/** Host route path the browser half POSTs the draft to. */
+export const ENHANCE_ENDPOINT = '/prompt-enhance/enhance'
+
+/**
+ * Mount prefix of the plugin's host routes. The webserver registration uses it
+ * verbatim; it used to be derived from {@link ENHANCE_ENDPOINT} with a
+ * `replace(/\/enhance$/, '')`, which would silently mount the WRONG path the
+ * day the endpoint constant is renamed.
+ */
+export const ENHANCE_PREFIX = '/prompt-enhance'
+
+/**
+ * Host route path of the incremental variant: same request body, but the
+ * response is an SSE stream of {@link EnhanceStreamEvent} frames so the panel
+ * can show the rewrite while it is being written.
+ */
+export const ENHANCE_STREAM_ENDPOINT = '/prompt-enhance/enhance-stream'
+
+/**
+ * Profile entry ids the plugin's settings section may be served under.
+ *
+ * The bare package name is what {@link PROMPT_ENHANCE_NAMESPACE} inserts, but
+ * an aggregate bundle renames child rows (`prompt-enhance` becomes
+ * `web-ui-prompt-enhance`), and the dsh 0.2.x settings service addresses rows
+ * by that id rather than by namespace. Both halves probe the same list in the
+ * same order, so the host section and the browser mirror can never resolve to
+ * two different documents.
+ */
+export const PROMPT_ENHANCE_ROW_IDS: readonly string[] = [
+  'prompt-enhance',
+  'dsh-prompt-enhance',
+  'web-ui-prompt-enhance',
+]
+
+/** Request body of one enhance call. */
+export interface EnhanceRequestBody {
+  /** Session whose model route should serve the call; absent forces settings/defaults. */
+  sessionId?: string
+  /** The raw draft text to rewrite. */
+  text: string
+}
+
+/** One successful enhancement. */
+export interface EnhanceResult {
+  /** The rewritten prompt body (already normalized: no fences, trimmed). */
+  text: string
+  /** Provider route that served the call. */
+  provider: string
+  /** Model id that served the call. */
+  model: string
+  /** Wall-clock duration of the model call in milliseconds. */
+  elapsedMs: number
+}
+
+/**
+ * Stable error codes the browser half maps to localized copy. The two
+ * admission rejections are separate codes because their recovery conditions
+ * differ: the per-minute rate cap clears on a known schedule (the route sends
+ * a `Retry-After` in seconds with it), while the concurrency cap clears as
+ * soon as an in-flight call finishes — no predictable delay to advertise.
+ */
+export type EnhanceErrorCode =
+  | 'rejected'
+  | 'rate-limit'
+  | 'concurrency-limit'
+  | 'cooldown'
+  | 'timeout'
+  | 'upstream'
+  | 'unconfigured'
+  | 'internal'
+
+/** Structured failure carried on every non-2xx / ok:false response. */
+export interface EnhanceError {
+  code: EnhanceErrorCode
+  /**
+   * Optional diagnostic detail, passed through verbatim: the provider's raw
+   * failure message, a config error, or an unknown-error description. The
+   * client renders its localized primary line from `code`/`params` and shows
+   * this beneath it when present — host-side text is a detail, never the
+   * primary line (which used to leak Chinese copy into non-Chinese UIs).
+   */
+  message?: string
+  /**
+   * Structured parameters the localized primary line interpolates:
+   * - rate-limit: { limit, retryAfterSeconds }
+   * - concurrency-limit: { max }
+   * - cooldown: { retryAfterSeconds, failures } — the failure breaker tripped
+   * - timeout: { seconds }
+   * - rejected with { count, max }: the over-length input message
+   * - upstream: optional { reason } selecting a fix hint (auth, quota, …)
+   */
+  params?: Record<string, string | number>
+  /**
+   * Optional pre-localized message the client already rendered in the user's
+   * language (set by client-side guards). When present the client shows it
+   * alone; otherwise it localizes by `code`/`params` and shows `message` as
+   * detail.
+   */
+  localized?: string
+}
+
+/** Response envelope of the enhance route. */
+export type EnhanceResponse =
+  | { ok: true; value: EnhanceResult }
+  | { ok: false; error: EnhanceError }
+
+/**
+ * One SSE frame of the incremental route. `delta` carries newly displayable
+ * text (already safe to show: leading/trailing fences are withheld), `done`
+ * carries the authoritative result — the SAME normalized body the one-shot
+ * route returns — and `error` carries the structured failure.
+ */
+export type EnhanceStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'done'; value: EnhanceResult }
+  | { type: 'error'; error: EnhanceError }

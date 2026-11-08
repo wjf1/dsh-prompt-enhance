@@ -4,26 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  test:
+  typecheck:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [22.x, 24.x]
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-
-      # 本插件零运行时依赖、测试也没有 devDependencies，因此不需要 install。
-      - name: Syntax check
-        run: npm run check
-
-      - name: Run tests
-        run: npm test
+          node-version: 22
+      # 镜像仓：npm 包不含 tests/ 与 scripts/build.mjs，门禁为依赖安装 + 类型检查
+      - run: npm ci
+      - run: npm run typecheck

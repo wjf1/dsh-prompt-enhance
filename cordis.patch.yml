@@ -1,5 +1,15 @@
-# dsh-prompt-enhance 的 bundle 入口：把宿主半登记进 DSH 的插件图。
-# 客户端半由 package.json 的 dsh.client 声明，加载器会自动取 exports["./client"]。
+# dsh-prompt-enhance bundle patch: inserts the prompt-enhance plugin row
+# into the web profile roster. Applied as a profile bundle layer (the
+# `dsh.bundle.patch` manifest field); install with
+# `dsh plugin --profile web add link:<repo>/dsh-prompt-enhance`.
+#
+# One package, both halves: the node half (exports ".") runs in the host
+# process and registers the POST /prompt-enhance/enhance route and the
+# /enhance slash command, and declares the "prompt-enhance" settings schema
+# this entry's config page renders (read live, per request); the
+# browser half (declared by `dsh.client`, served from lib/client.js) adds
+# the composer enhance button (conversation.input.right), the preview
+# panel, and the undo bar (conversation.input.dock).
 - insert:
-    - id: dsh-prompt-enhance
-      name: 'dsh-prompt-enhance'
+    - id: prompt-enhance
+      name: dsh-prompt-enhance
