@@ -12,7 +12,7 @@
   走 profile 现有模型把草稿重写成更好的提示词。
 - **客户端半** `lib/client.js`：注册到 `conversation.input.right` 槽位，在模型选择器左侧渲染 ✨ 按钮。
 
-状态：**v0.2.0。31 项自动化测试全绿（`node --test "tests/*.test.mjs"`）。重启后（GUI 端口 55451）已完成全部真机验收：✨ 在模型选择器左侧、请求体带界面当前模型（`reasoningEffort: max`）、宿主回显 `followed:true|false`、多层撤销 `data-depth` 2→1→0、差异卡自动弹出并可 Escape 关闭。**
+状态：**v0.3.4（镜像同步版，2026-11-12 打 tag 发布）**。`main` 的主进程半已换成上游 rongxingda 的 0.3.x 实现，本仓库只做镜像 + 保留 `lib/prompt.mjs` 的提示词复刻与引号清洗。**镜像仓无测试门禁**（上游不随包发布测试），自动化只有 `npm run typecheck`；下表 0.2.x 时代的真机验收结论对应的是**自研实现**，对当前 0.3.x 实现未重新走查。
 
 ## 2. 技术栈与运行基线
 
@@ -60,6 +60,11 @@ C:\Users\admin\.dsh\dsh-prompt-enhance\
    错误码 `NO_ADAPTER / MISSING_CREDENTIAL / AUTH / RATE_LIMIT / CONTEXT_WINDOW_EXCEEDED / QUOTA / TIMEOUT`。
 
 ## 4. 最近一轮变更与交付成果
+- **2026-11-12：发布 v0.3.4（镜像同步定版）** —— 把 2026-11-08 的镜像同步正式记成 0.3.4 版本段并打 annotated tag / Release。此前 CHANGELOG 的 `[Unreleased]` 还停留在自研实现时代（0.2.1 之后的四项修复 + 测试/CI 增补），与镜像后的代码严重脱节，本轮据实重写：
+  - **仍然成立的 3 项修复**并入 0.3.4 段（超时不中止上游流 → 现位于 `src/enhancer.ts` 的 `finally`；413 发不出去 → 现位于 `src/enhance-routes.ts` 的 `connection: close`；引号嵌套清洗 → `lib/prompt.mjs` 保留本仓库实现）。
+  - **已失效的条目删除**：「测试硬编码绝对路径」「补 `scripts.check`」「导出 `MODEL_ID_PATTERN` / `DEFAULTS`」「新增漂移测试 / 回归测试」——`tests/` 与 `tools/` 已在镜像同步中删除，这些条目再留着会误导接手者去找不存在的文件。
+  - **「已知偏差」改写**：不再是「npm 0.2.7 未回流」，而是「仓库无测试门禁（上游不发布测试）」「tag → publish 仍需上游作者在有 npm 凭证的环境完成」「历史 0.1.0/0.2.0/0.2.1 三个 tag 属自研时代，与 npm 同号包不是同一套代码」。
+  - 发版前门禁：`npm run typecheck` 零错误（镜像仓当前唯一自动化闸门）。
 - **2026-11-08：镜像同步 0.3.4**——经用户确认仓库定位为 npm 包（rongxingda，Apache-2.0）的第三方镜像：同步 src/ 全量 TS 源码 + lib/ 产物 + docs/release-0.2.3~0.3.4 + README 双语；LICENSE 换为上游 Apache-2.0；删除旧 tests/（0.2.1 时代，与新源码不匹配，上游未随包发布测试）与旧 tools/；自增 tsconfig.json 支持 typecheck（npm 包不含）；ci.yml 重写为 npm ci + typecheck。验证：typecheck 零错误。
 
 - 从 WorkBuddy 的 `app.asar` 里逆向出增强链路的**系统提示词原文**（`SYSTEM_PROMPT`）并逐字复刻进
