@@ -9,8 +9,8 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       # 镜像仓：npm 包不含 tests/ 与 scripts/build.mjs，门禁为依赖安装 + 类型检查
