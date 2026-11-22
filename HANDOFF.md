@@ -64,7 +64,8 @@ C:\Users\admin\.dsh\dsh-prompt-enhance\
 - **2026-11-22：部署副本对齐 + 同步脚本（后端设计专项分析发现的 P0）** —— 宿主经 junction 实际加载的部署副本 `C:\Users\admin\.dsh\dsh-prompt-enhance` 长期停在 **0.2.1**（自研实现），落后仓库 main 的 **0.3.4** 八个版本：0.3.4 修的三项 bug（超时不中止上游流 / 413 发不出 / 引号嵌套清洗）在宿主上带病运行。本轮：
   - **新增 `scripts/sync-to-profile.mjs`**（本仓库运维脚本，非 npm 包内容）：版本门禁（同版本拒绝刷写）→ 白名单覆盖（`lib/`、`package.json`、`cordis.patch.yml`、README*、CHANGELOG、`docs/`；部署副本多出的 `tests/`、`tools/`、HANDOFF 等宿主侧资产不碰）→ 逐文件 sha256 源/目标比对 + 版本回读断言，任一失败 exit 1。
   - **已执行同步**：24 个文件校验一致，部署副本 0.2.1 → 0.3.4。前置验证：镜像仓无 `scripts/build.mjs`（ci.yml 注明是镜像形态刻意不含），`npx tsc -p .` 重编译后 `git diff lib/` 为空——仓库内已提交 lib 即最新产物。
-  - **待办**：宿主进程重启（或插件重载）后新版本才生效——重启属服务操作，需用户确认后执行。
+  - **待办**：宿主进程重启（或插件重载）后 0.3.4 生效——重启属服务操作，需用户确认后执行。
+  - **部署限制（2026-11-22 二轮补充）**：本轮 src/ 修复（writeJson 防护 / 瞬断重试 / redactSecrets）**无法随库部署**——`lib/` 是上游 build.mjs 的 bundle 产物，镜像仓刻意不含构建链（tsc 仅做类型检查，noEmit），src/ 改动只存在于源码形态并通过 typecheck 门禁。宿主侧 lib 仍为 0.3.4 原版（稳定无回归）；增强生效的两条路径：给上游提 PR 随下版 npm 包发布（首选），或上游 0.4.x 镜像同步时自然带走。
 - **2026-11-12：发布 v0.3.4（镜像同步定版）** —— 把 2026-11-08 的镜像同步正式记成 0.3.4 版本段并打 annotated tag / Release。此前 CHANGELOG 的 `[Unreleased]` 还停留在自研实现时代（0.2.1 之后的四项修复 + 测试/CI 增补），与镜像后的代码严重脱节，本轮据实重写：
   - **仍然成立的 3 项修复**并入 0.3.4 段（超时不中止上游流 → 现位于 `src/enhancer.ts` 的 `finally`；413 发不出去 → 现位于 `src/enhance-routes.ts` 的 `connection: close`；引号嵌套清洗 → `lib/prompt.mjs` 保留本仓库实现）。
   - **已失效的条目删除**：「测试硬编码绝对路径」「补 `scripts.check`」「导出 `MODEL_ID_PATTERN` / `DEFAULTS`」「新增漂移测试 / 回归测试」——`tests/` 与 `tools/` 已在镜像同步中删除，这些条目再留着会误导接手者去找不存在的文件。
