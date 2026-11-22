@@ -221,6 +221,11 @@ export async function enhanceText(llm: LlmStreamFace, options: EnhanceCallOption
     // One model call per attempt; the loop exists only for the single effort
     // downgrade below, so it can never spin more than twice.
     let retriedWithoutEffort = false
+    // Transient transport failures get exactly one backoff retry: an occasional
+    // hiccup (ECONNRESET / fetch failed) would otherwise burn one of the three
+    // failure-streak slots in enhance-routes' circuit breaker and lock the
+    // feature into its 30s cooldown for what a single retry self-heals.
+    let retriedNetwork = false
     const readAttempt = async (): Promise<
       { ok: true; blocks: ReturnType<BlockAssembler['blocks']> } | { ok: false; detail: EnhanceError }
     > => {
@@ -229,10 +234,17 @@ export async function enhanceText(llm: LlmStreamFace, options: EnhanceCallOption
         try {
           attempt = await readCall(retriedWithoutEffort ? 'inherit' : requestedEffort)
         } catch (error) {
-          // Defence for a host that rejects the effort somewhere the harness's
-          // own terminal conversion does not cover; on a current host this does
-          // not fire (see the finish check right below).
-          if (retriedWithoutEffort || requestedEffort === 'inherit' || !isEffortRejectionThrow(error)) throw error
+          if (retriedWithoutEffort || requestedEffort === 'inherit' || !isEffortRejectionThrow(error)) {
+            // Transient transport hiccup (adapter-level throw): one backoff
+            // retry, user abort excluded. Terminal/business errors still
+            // propagate untouched.
+            if (!signal.aborted && !retriedNetwork && isTransientTransportError(error)) {
+              retriedNetwork = true
+              await new Promise((resolve) => setTimeout(resolve, 500))
+              continue
+            }
+            throw error
+          }
           retriedWithoutEffort = true
           continue
         }
@@ -431,6 +443,20 @@ function isEffortRejectionThrow(error: unknown): boolean {
     return isEffortRejectionCode((failure as { code?: string }).code)
   }
   return false
+}
+
+/**
+ * Transport-level transient failure worth one backoff retry: adapter dispatch
+ * throws surfaced from the host's `ctx.llm.stream` (network layer) rather than
+ * structured business failures. Deliberately conservative — anything not
+ * recognizably a transport hiccup propagates untouched, so terminal errors
+ * keep reaching the circuit breaker immediately.
+ */
+function isTransientTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|EPIPE|fetch failed|socket hang up|network/i.test(
+    message,
+  )
 }
 
 /**

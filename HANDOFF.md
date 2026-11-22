@@ -36,7 +36,7 @@ C:\Users\admin\.dsh\dsh-prompt-enhance\
 ├─ cordis.patch.yml      # 宿主半进插件图（insert id=dsh-prompt-enhance）
 ├─ lib\index.js          # 宿主半：路由注册 + 请求围栏 + ctx.llm.stream 调用 + 错误码
 ├─ lib\prompt.mjs        # WorkBuddy 逐字复刻的 SYSTEM_PROMPT + buildUserPrompt + cleanEnhancedText
-├─ lib\client.js         # 客户端半：✨ 按钮 + ↺ 撤销栈(最多 8 层) + ⇄ 词级差异卡（portal 到 body）
+├─ lib\client.js         # 客户端半：✨ 按钮 + ↺ 撤销栈 + ⇄ 差异展示（0.2.x 自研时代描述；0.3.x 镜像后为上游编译产物，撤销栈实为 depth 3 + 60 条 LRU——见 src/client/undo-stack.ts，词级差异卡已移除仅剩并排展示）
 ├─ tests\host.test.mjs   # 路由/调用链/模型透传白名单（假 ctx）+ 错误映射
 ├─ tests\prompt.test.mjs # 提示词契约、清洗、长度限制
 ├─ tests\client.test.mjs # 状态机（假 React 驱动，不需要真 DOM）
@@ -60,6 +60,7 @@ C:\Users\admin\.dsh\dsh-prompt-enhance\
    错误码 `NO_ADAPTER / MISSING_CREDENTIAL / AUTH / RATE_LIMIT / CONTEXT_WINDOW_EXCEEDED / QUOTA / TIMEOUT`。
 
 ## 4. 最近一轮变更与交付成果
+- **2026-11-22：P1/P2 逐项加固（后端设计专项分析）** —— 恢复最小测试门禁（vitest devDependency + `tests/` 自有 7 用例：undo-stack LRU 边界 4 + writeJson 防护 3；`ci.yml` 追加 `npm test` + 顶层只读权限）；`http.ts` `writeJson` 幂等防御（前置拒绝分支抛错带崩宿主的 unhandledRejection 面）；`enhancer.ts` 传输层瞬断一次退避重试（断路器不再被偶发抖动点燃 30s 冷却，abort 与业务错误原样传播）；`settings-source.ts` `redactSecrets` 显式开启（纯防御面）；HANDOFF 目录树/撤销栈描述加 0.3.x 现状标注。验证：`npx vitest run` **7/7**、`npm run typecheck` 零错误。**遗留待办**：兼容层 try-catch 降级模式重复 6+ 处（orchestrate.ts 的 `serviceEntry` 可推广）——镜像仓刻意维持与上游形态一致，收敛属自有文件重构，待有功能迭代时顺路做。
 - **2026-11-22：部署副本对齐 + 同步脚本（后端设计专项分析发现的 P0）** —— 宿主经 junction 实际加载的部署副本 `C:\Users\admin\.dsh\dsh-prompt-enhance` 长期停在 **0.2.1**（自研实现），落后仓库 main 的 **0.3.4** 八个版本：0.3.4 修的三项 bug（超时不中止上游流 / 413 发不出 / 引号嵌套清洗）在宿主上带病运行。本轮：
   - **新增 `scripts/sync-to-profile.mjs`**（本仓库运维脚本，非 npm 包内容）：版本门禁（同版本拒绝刷写）→ 白名单覆盖（`lib/`、`package.json`、`cordis.patch.yml`、README*、CHANGELOG、`docs/`；部署副本多出的 `tests/`、`tools/`、HANDOFF 等宿主侧资产不碰）→ 逐文件 sha256 源/目标比对 + 版本回读断言，任一失败 exit 1。
   - **已执行同步**：24 个文件校验一致，部署副本 0.2.1 → 0.3.4。前置验证：镜像仓无 `scripts/build.mjs`（ci.yml 注明是镜像形态刻意不含），`npx tsc -p .` 重编译后 `git diff lib/` 为空——仓库内已提交 lib 即最新产物。

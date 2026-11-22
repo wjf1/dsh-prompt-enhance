@@ -5,6 +5,17 @@
 ### 变更
 
 - **部署副本对齐 + 新增 `scripts/sync-to-profile.mjs` 同步脚本**：宿主 junction 实际加载的部署副本（`C:\Users\admin\.dsh\dsh-prompt-enhance`）此前停留在 0.2.1（自研实现），落后本仓库 0.3.4 八个版本——0.3.4 修复的三项 bug 在宿主上带病运行。新增同步脚本：版本门禁（同版本拒绝刷写）、白名单覆盖（lib/package.json/cordis.patch.yml/README*/CHANGELOG/docs，不碰部署副本宿主侧资产 tests/tools/HANDOFF）、逐文件 sha256 源/目标校验与版本回读断言。已执行同步（24 个文件校验一致，部署副本现为 0.3.4）；宿主进程重启后生效。
+- **恢复最小测试门禁 + CI 接入**（后端设计专项分析 P1）：镜像仓此前零测试（上游不随包发布测试，`npm test` 执行即报 No test files found）。新增 vitest（devDependency，不进包内容）与 `tests/`（本仓库自有）：undo-stack 行为钉子 4 用例（深度限制 / pop-clear 语义 / 全局 LRU 逐出边界——恰达上限不逐出 / 刷新免逐出）、http `writeJson` 响应边界防护 3 用例（幂等跳过 / 提前断开吞错）。`ci.yml` 重命名 job 为 check 并追加 `npm test` 步骤 + 顶层 `permissions: contents: read` 收敛。
+- **LLM 调用瞬断重试（`src/enhancer.ts`）**：宿主适配器抛出的传输层瞬断（ECONNRESET/ENOTFOUND/超时/fetch failed/socket hang up 等）重试一次（500ms 退避，用户 abort 排除）——此前偶发抖动直接失败并被 3 次失败断路器放大成 30s 全局冷却。业务/终态错误仍原样传播，不稀释断路器语义。
+
+### 安全
+
+- **`settings-source.ts` 的 `describe({ redactSecrets: false })` 改为显式开启**：当前 schema 无 secret 字段故行为不变，纯防御面——未来任一敏感字段加入即成明文读取面（describe 结果被 rowsOf 全量消费）。
+
+### 修复
+
+- **`writeJson` 响应边界防护（`src/http.ts`）**：`serveEnhance` 的前置拒绝分支都在 try 块之外，客户端在响应前断开时 `writeHead`/`end` 抛 `ERR_STREAM_WRITE_AFTER_END` 会成为 unhandledRejection 把宿主进程带崩。改为与 `endResponse` 同款幂等防御：已终止响应跳过、写抛错就地吞掉并兜底终止。
+- **文档脱节修正（HANDOFF）**：目录树与撤销栈描述仍是 0.2.x 自研时代口径（"撤销栈最多 8 层 / 词级差异卡"）——0.3.x 镜像后撤销栈实为 depth 3 + 60 条 LRU（`src/client/undo-stack.ts`）、词级差异卡已移除仅剩并排展示，已加现状标注。
 
 ## 0.3.4 — 2026-11-08（镜像同步）
 

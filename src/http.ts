@@ -31,12 +31,21 @@ export async function readBoundedJson(req: IncomingMessage, maxBytes: number): P
  * per-request results and must never be cached.
  */
 export function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'referrer-policy': 'no-referrer',
-    'cache-control': 'no-store',
-  })
-  res.end(JSON.stringify(body))
+  // 幂等且不抛：serveEnhance 的前置拒绝分支都在 try 块之外，客户端在响应前断开时
+  // writeHead/end 会抛 ERR_STREAM_WRITE_AFTER_END 成为 unhandledRejection 把宿主
+  // 进程带崩——与 endResponse 同款防御（endResponse 的注释详述了这条失败面）。
+  if (res.writableEnded || res.destroyed) return
+  try {
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'referrer-policy': 'no-referrer',
+      'cache-control': 'no-store',
+    })
+    res.end(JSON.stringify(body))
+  } catch {
+    // Half-closed socket: nothing left to answer with.
+    endResponse(res)
+  }
 }
 
 /**

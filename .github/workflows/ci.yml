@@ -6,13 +6,18 @@ on:
   pull_request:
 
 jobs:
-  typecheck:
+  check:
     runs-on: ubuntu-latest
+    # 顶层只给读权限（本 workflow 无任何写操作）
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      # 镜像仓：npm 包不含 tests/ 与 scripts/build.mjs，门禁为依赖安装 + 类型检查
+      # 镜像仓：npm 包不含 scripts/build.mjs，门禁为依赖安装 + 类型检查 + 单测。
+      # tests/ 为本仓库自有（上游不随包发布测试），vitest 是 devDependency 不进包内容。
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test

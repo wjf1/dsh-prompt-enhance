@@ -141,7 +141,9 @@ export function installSettingsSource(ctx: Context, options: SettingsSourceOptio
     //    explicitly; failing to register it changes nothing functionally.
     if (typeof service.describe === 'function') {
       reader = (): unknown => {
-        const rows = rowsOf(service.describe?.({ redactSecrets: false }))
+        // redactSecrets 显式开：当前 schema 无 secret 字段故行为不变，但这是纯防御面——
+        // 未来任一敏感字段加入即成明文读取面（describe 结果被 rowsOf 全量消费）
+        const rows = rowsOf(service.describe?.({ redactSecrets: true }))
         const row = pickRow(rows, options.rowIds)
         if (row === undefined) return undefined
         resolvedRowId = String(row.ns)
