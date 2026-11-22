@@ -2,6 +2,10 @@
 
 ## Unreleased（未发布，对应仓库 main）
 
+### 变更
+
+- **部署副本对齐 + 新增 `scripts/sync-to-profile.mjs` 同步脚本**：宿主 junction 实际加载的部署副本（`C:\Users\admin\.dsh\dsh-prompt-enhance`）此前停留在 0.2.1（自研实现），落后本仓库 0.3.4 八个版本——0.3.4 修复的三项 bug 在宿主上带病运行。新增同步脚本：版本门禁（同版本拒绝刷写）、白名单覆盖（lib/package.json/cordis.patch.yml/README*/CHANGELOG/docs，不碰部署副本宿主侧资产 tests/tools/HANDOFF）、逐文件 sha256 源/目标校验与版本回读断言。已执行同步（24 个文件校验一致，部署副本现为 0.3.4）；宿主进程重启后生效。
+
 ## 0.3.4 — 2026-11-08（镜像同步）
 
 仓库定位改为**第三方镜像**：`main` 全量同步 npm 包 `dsh-prompt-enhance@0.3.4`（上游 maintainer rongxingda，上游仓库 `rongxingda/dsh-prompt-enhance`，Apache-2.0）。
